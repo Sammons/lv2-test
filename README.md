@@ -1,0 +1,1 @@
+Captures 2 seconds of audio and plays it forward/backward repeatedly merging inline with the current incoming audio stream.
