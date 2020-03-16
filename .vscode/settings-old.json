@@ -1,0 +1,6 @@
+{
+  "C_Cpp.default.includePath": [
+    "/usr/include/lv2-c++-tools/",
+    "/usr/include"
+  ]
+}

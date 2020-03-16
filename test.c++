@@ -4,24 +4,31 @@
 #include "string.h"
 #include "math.h"
 
+#include "serial.c++"
+
 #define TEST_URI "http://sammons.io/plugins/test"
 
 typedef enum {
 	TEST_INPUT  = 0,
-	TEST_OUTPUT = 1
+	TEST_OUTPUT = 1,
+  DURATION_INPUT = 2
 } PortIndex;
 
 typedef struct {
 	// Port buffers
 	const float* input;
 	float*       output;
+  float*       duration;
+  int controller_magnitude;
+  int controller_enable;
 } Converter;
 
-float *sample_buffer = nullptr;
-int sustain_counter = 0;
+
+
 int inverter = 1;
-bool sustain_init = false;
-int samples = 0;
+double sample_rate = 0;
+SerialDevice controller("usb-Adafruit_Industries_LLC_Trinket_M0_410DD1F1536425050213E273046171FF-if00");
+
 
 static LV2_Handle
 instantiate(const LV2_Descriptor*     descriptor,
@@ -29,11 +36,11 @@ instantiate(const LV2_Descriptor*     descriptor,
             const char*               bundle_path,
             const LV2_Feature* const* features)
 {
-	Converter* data = (Converter*)calloc(1, sizeof(Converter));
-  samples = round(rate * 2);
-  sample_buffer = (float*)calloc(1, samples * sizeof(float));
-  fprintf(stderr, "Successfully allocated\n");
-	return (LV2_Handle)data;
+	Converter* converter = (Converter*)calloc(1, sizeof(Converter));
+  sample_rate = rate;
+  controller.initiate(); // only call this once plz
+  controller.configure_lv2_state(sample_rate);
+	return (LV2_Handle)converter;
 }
 
 static void
@@ -50,42 +57,66 @@ connect_port(LV2_Handle instance,
 	case TEST_OUTPUT:
 		converter->output = (float*)data;
 		break;
+  case DURATION_INPUT:
+    // converter->duration = (float*)data;
+    break;
 	}
 }
+
+
 
 /** reset everything except connect_port */
 static void
 activate(LV2_Handle instance)
 {
+  const Converter* converter = (const Converter*)instance;
   fprintf(stderr, "Successfully activated\n");
 }
 
 static void
 run(LV2_Handle instance, uint32_t n_samples)
 {
+  if (controller.last_frame.enabled == 0) {
+    return;
+  }
 	const Converter* converter = (const Converter*)instance;
-
+  controller.samples = round((controller.last_frame.magnitude/100.0 * 2000.0)/1000.0 * sample_rate);
 	const float* const input  = converter->input;
 	float* const       output = converter->output;
-  if (sustain_init) {
+  if (controller.sustain_init) {
+    
+    // for (int i = samples - 1; i > samples - 1000; --i) {
+    //   if (sample_buffer[i] < sample_buffer[back_zero]) {
+    //     back_zero = i;
+    //   }
+    // }
     for (uint32_t pos = 0; pos < n_samples; pos++) {
-      output[pos] = sample_buffer[sustain_counter] + input[pos];
-      sustain_counter = sustain_counter + inverter;
-      if (sustain_counter >= samples || sustain_counter < 0) {
+      if (controller.sustain_counter >= controller.samples) {
         inverter = inverter * -1;
-        sustain_counter += inverter;
+        controller.sustain_counter = 0;
       }
+      if (controller.sustain_counter <= 0) {
+        inverter = inverter * -1;
+        controller.sustain_counter = 0;
+      }
+      output[pos] = controller.sample_buffer[controller.sustain_counter] + input[pos];
+      controller.sustain_counter += inverter;
     }
   } else {
+    if (controller.sustain_counter == 0) {
+      std::cout << "start recording sample" << std::endl;
+    }
     uint32_t pos = 0;
-    while (pos < n_samples && sustain_counter < samples) {
-      sample_buffer[sustain_counter] = input[pos];
-      ++sustain_counter;
+    while (pos < n_samples && controller.sustain_counter < controller.samples) {
+      controller.sample_buffer[controller.sustain_counter] = input[pos];
+      ++controller.sustain_counter;
       ++pos;
     }
-    if (sustain_counter == samples) {
-      sustain_init = true;
-      sustain_counter = 0;
+    if (controller.sustain_counter == controller.samples) {
+      fprintf(stdout, "Sample ready. Samples = %f /1000.0 * %f\n",
+        (controller.last_frame.magnitude/100.0 * 2000.0), sample_rate);
+      controller.sustain_init = true;
+      controller.sustain_counter = 0;
     }
   }
 }
@@ -93,18 +124,17 @@ run(LV2_Handle instance, uint32_t n_samples)
 static void
 deactivate(LV2_Handle instance)
 {
-  memset(&sample_buffer[0], 0, samples);
-  sustain_init = false;
-  sustain_counter = 0;
+  memset(controller.sample_buffer, 0, controller.samples * sizeof(float));
+  controller.sustain_init = false;
+  controller.sustain_counter = 0;
   fprintf(stderr, "Successfully deactivated\n");
 }
 
 static void
 cleanup(LV2_Handle instance)
 {
+	controller.reset_lv2_state();
   fprintf(stderr, "Successfully cleaning up\n");
-	free(instance);
-  free(sample_buffer);
 }
 
 static const void*
